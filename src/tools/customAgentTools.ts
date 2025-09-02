@@ -603,6 +603,16 @@ const validate_computed_styles = defineTabTool({
 
       const passedCount = results.filter((r) => r.result === "pass").length;
 
+      // Generate evidence message
+      let evidence = "";
+      if (passedCount === results.length) {
+        evidence = `Found element "${element}" with all ${results.length} style properties matching expected values`;
+      } else {
+        const failedChecks = results.filter(r => r.result === "fail");
+        const failedStyles = failedChecks.map(c => `${c.style}: expected "${c.expected}", got "${c.actual}"`).join(", ");
+        evidence = `Found element "${element}" but ${failedChecks.length} style properties failed validation: ${failedStyles}`;
+      }
+
       // 3) Answer
       const payload = {
         ref,
@@ -612,6 +622,7 @@ const validate_computed_styles = defineTabTool({
           passed: passedCount,
           failed: results.length - passedCount,
           status: passedCount === results.length ? "pass" : "fail",
+          evidence,
         },
         checks: results,
       };
@@ -635,8 +646,8 @@ const textValidationSchema = z.object({
   expectedText: z.string().describe(
     "Expected text value to validate in the element or whole page"
   ),
-  matchType: z.enum(["exact", "contains", "not-contains"]).default("exact").describe(
-    "Type of match: 'exact' checks full equality for specific elements, 'contains' checks substring presence, 'not-contains' checks that text is NOT present. When ref is null, always uses 'contains' logic regardless of matchType"
+  matchType: z.enum(["exact", "contains", "not-contains"]).default("contains").describe(
+    "Type of match: 'exact' checks exact match, 'contains' checks substring presence, 'not-contains' checks that text is NOT present. Works for both specific elements (when ref provided) and page snapshot (when ref is null)"
   ),
   caseSensitive: z.boolean().optional().describe(
     "Enable case-sensitive comparison (default false)"
@@ -666,6 +677,40 @@ const validate_element_text = defineTabTool({
         actualText = await locator.evaluate(
           (el: Element) => (el.textContent ?? "").trim()
         );
+        
+        // Fallback for input elements when textContent is empty and matchType is "contains"
+        if (!actualText) {
+          console.log(`Text content is empty for element ${element}, trying fallback properties...`);
+          actualText = await locator.evaluate((el: Element) => {
+            // Check various input properties as fallback
+            
+            if (el.tagName.toLowerCase() === 'input') {
+              const input = el as HTMLInputElement;
+              const fallbackText = input.value || input.placeholder || input.defaultValue || input.getAttribute('aria-label') || '';
+              return fallbackText;
+            }
+            // Check for other form elements
+            if (el.tagName.toLowerCase() === 'textarea') {
+              const textarea = el as HTMLTextAreaElement;
+              const fallbackText = textarea.value || textarea.placeholder || textarea.defaultValue || '';
+              return fallbackText;
+            }
+            if (el.tagName.toLowerCase() === 'select') {
+              const select = el as HTMLSelectElement;
+              const selectedOption = select.options[select.selectedIndex];
+              const fallbackText = selectedOption ? selectedOption.text || selectedOption.value : '';
+              return fallbackText;
+            }
+            // Check for contenteditable elements
+            if (el.getAttribute('contenteditable') === 'true') {
+              const fallbackText = el.innerHTML || '';
+              return fallbackText;
+            }
+            return '';
+          });
+          console.log(`Fallback result for ${element}: "${actualText}"`);
+          
+        }
       } else {
         const snapshotMd: string = await tab.captureSnapshot();
         const yamlMatch = snapshotMd.match(/```yaml([\s\S]*?)```/);
@@ -673,41 +718,56 @@ const validate_element_text = defineTabTool({
 
         actualText = yamlContent;
       }
-      // console.log('actualText')
-      // console.dir(actualText, { depth: null })
       const norm = (s: string) => (caseSensitive ? s : s.toLowerCase());
       const expected = expectedText;
-      
       let passed;
+      // Apply match type logic for both specific elements and page snapshot
+      if (matchType === "exact") {
+        passed = norm(actualText) === norm(expected);
+      } else if (matchType === "contains") {
+        passed = norm(actualText).includes(norm(expected));
+      } else if (matchType === "not-contains") {
+        passed = !norm(actualText).includes(norm(expected));
+      }
+
+      // Generate evidence message
+      let evidence = "";
       if (ref) {
-        // When ref is provided, validate specific element text
-        if (matchType === "exact") {
-          passed = norm(actualText) === norm(expected);
-        } else if (matchType === "contains") {
-          passed = norm(actualText).includes(norm(expected));
-        } else if (matchType === "not-contains") {
-          passed = !norm(actualText).includes(norm(expected));
+        if (passed) {
+          if (matchType === "exact") {
+            evidence = `Found element "${element}" with exact text match: "${actualText}"`;
+          } else if (matchType === "contains") {
+            evidence = `Found element "${element}" containing expected text "${expectedText}" in: "${actualText}"`;
+          } else if (matchType === "not-contains") {
+            evidence = `Found element "${element}" that correctly does not contain text "${expectedText}"`;
+          }
+        } else {
+          if (matchType === "exact") {
+            evidence = `Element "${element}" text "${actualText}" does not exactly match expected "${expectedText}"`;
+          } else if (matchType === "contains") {
+            evidence = `Element "${element}" text "${actualText}" does not contain expected text "${expectedText}"`;
+          } else if (matchType === "not-contains") {
+            evidence = `Element "${element}" unexpectedly contains text "${expectedText}" in: "${actualText}"`;
+          }
         }
       } else {
-        // When ref is null, always check if expected text is contained in snapshot
-        // This makes more sense than comparing entire snapshot with element text
-        if (matchType === "not-contains") {
-          passed = !norm(actualText).includes(norm(expected));
+        if (passed) {
+          if (matchType === "exact") {
+            evidence = `Page snapshot exactly matches expected text: "${expectedText}"`;
+          } else if (matchType === "contains") {
+            evidence = `Found expected text "${expectedText}" in page snapshot`;
+          } else if (matchType === "not-contains") {
+            evidence = `Page snapshot correctly does not contain text "${expectedText}"`;
+          }
         } else {
-          passed = norm(actualText).includes(norm(expected));
+          if (matchType === "exact") {
+            evidence = `Page snapshot does not exactly match expected text "${expectedText}"`;
+          } else if (matchType === "contains") {
+            evidence = `Expected text "${expectedText}" not found in page snapshot`;
+          } else if (matchType === "not-contains") {
+            evidence = `Page snapshot unexpectedly contains text "${expectedText}"`;
+          }
         }
-        
-        // // Add debug information when text is not found in snapshot
-        // if (!passed && (matchType === "contains" || matchType === "exact")) {
-        //   console.log("=== TEXT VALIDATION DEBUG ===");
-        //   console.log("Expected text:", expectedText);
-        //   console.log("Normalized expected:", norm(expected));
-        //   console.log("Match type:", matchType);
-        //   console.log("Case sensitive:", caseSensitive);
-        //   console.log("Full snapshot content:");
-        //   console.log(actualText);
-        //   console.log("=== END DEBUG ===");
-        // }
       }
 
       const payload = {
@@ -718,6 +778,7 @@ const validate_element_text = defineTabTool({
           passed: passed ? 1 : 0,
           failed: passed ? 0 : 1,
           status: passed ? "pass" : "fail",
+          evidence,
         },
         checks: [{
           property: "text",
@@ -848,6 +909,16 @@ const validate_dom_properties = defineTabTool({
 
       const passedCount = results.filter((r) => r.result === "pass").length;
 
+      // Generate evidence message
+      let evidence = "";
+      if (passedCount === results.length) {
+        evidence = `Found element "${element}" with all ${results.length} DOM properties matching expected values`;
+      } else {
+        const failedChecks = results.filter(r => r.result === "fail");
+        const failedProps = failedChecks.map(c => `${c.property}: expected "${c.expected}", got "${c.actual}"`).join(", ");
+        evidence = `Found element "${element}" but ${failedChecks.length} DOM properties failed validation: ${failedProps}`;
+      }
+
       // 3) answer
       const payload = {
         ref,
@@ -857,6 +928,7 @@ const validate_dom_properties = defineTabTool({
           passed: passedCount,
           failed: results.length - passedCount,
           status: passedCount === results.length ? "pass" : "fail",
+          evidence,
         },
         checks: results,
         snapshot: allProps, //all properties for debugging
@@ -917,6 +989,18 @@ const check_element_in_snapshot = defineTabTool({
         const passedCount = elementResults.filter((r: any) => r.result === "pass").length;
         const overallStatus = passedCount === elements.length ? "pass" : "fail";
         
+        // Generate evidence message
+        let evidence = "";
+        if (overallStatus === "pass") {
+          evidence = `All ${elements.length} elements found in snapshot with correct match types`;
+        } else {
+          const failedElements = elementResults.filter((r: any) => r.result === "fail");
+          const failedDetails = failedElements.map((r: any) => 
+            `${r.element} (${r.matchType === "contains" ? "not found" : "unexpectedly found"})`
+          ).join(", ");
+          evidence = `${passedCount}/${elements.length} elements passed. Failed: ${failedDetails}`;
+        }
+
         const payload = {
           elements: elementResults,
           summary: {
@@ -924,9 +1008,7 @@ const check_element_in_snapshot = defineTabTool({
             passed: passedCount,
             failed: elements.length - passedCount,
             status: overallStatus,
-            message: overallStatus === "pass" 
-              ? `All ${elements.length} elements passed their individual checks` 
-              : `${passedCount}/${elements.length} elements passed their individual checks`
+            evidence,
           },
           snapshot: {
             snapshotLength: snapshotMd.length
@@ -1049,6 +1131,30 @@ const check_alert_in_snapshot = defineTabTool({
       }
       console.log('passed:', passed);
       
+      // Generate evidence message
+      let evidence = "";
+      if (matchType === "contains") {
+        if (passed) {
+          if (hasText) {
+            evidence = `Alert dialog found with text: "${alertText}" containing expected: "${hasText}"`;
+          } else {
+            evidence = `Alert dialog found with text: "${alertText}"`;
+          }
+        } else {
+          if (hasText) {
+            evidence = `Alert dialog found but text "${hasText}" not found in: "${alertText}"`;
+          } else {
+            evidence = `Alert dialog not found in snapshot`;
+          }
+        }
+      } else { // not-contains
+        if (passed) {
+          evidence = `Alert dialog correctly not found in snapshot`;
+        } else {
+          evidence = `Alert dialog unexpectedly found with text: "${alertText}"`;
+        }
+      }
+
       const payload = {
         element,
         matchType,
@@ -1059,15 +1165,7 @@ const check_alert_in_snapshot = defineTabTool({
         textCheckMessage,
         summary: {
           status: passed ? "pass" : "fail",
-          message: matchType === "contains" 
-            ? (passed 
-              ? (hasText 
-                ? `Alert dialog found in snapshot and contains expected text: "${hasText}"`
-                : "Alert dialog found in snapshot")
-              : (hasText 
-                ? `Alert dialog found but does not contain expected text: "${hasText}"`
-                : "Alert dialog not found in snapshot"))
-            : (passed ? "Alert dialog not found in snapshot (as expected)" : "Alert dialog found in snapshot (unexpected)")
+          evidence,
         },
         snapshot: {
           containsAlert: alertExists,
@@ -1093,7 +1191,7 @@ const check_alert_in_snapshot = defineTabTool({
         textCheckMessage: "",
         summary: {
           status: "error",
-          message: errorMessage
+          evidence: errorMessage
         },
         error: error instanceof Error ? error.message : String(error)
       };
@@ -1109,6 +1207,103 @@ const check_alert_in_snapshot = defineTabTool({
   },
 });
 
+const default_validation = defineTabTool({
+  capability: 'core',
+  schema: {
+    name: 'default_validation',
+    title: 'Default Validation Tool',
+    description: 'Default tool for when LLM cannot find a suitable tool. Accepts ref and JavaScript code to parse and execute.',
+    inputSchema: z.object({
+      ref: z.string().describe('Element reference from the page snapshot'),
+      jsCode: z.string().describe('JavaScript code to execute on the element. The function should return "pass" or "fail" as string to determine the validation result.'),
+    }),
+    type: 'readOnly',
+  },
+  handle: async (tab, params, response) => {
+    const { ref, jsCode } = params;
+    
+    await tab.waitForCompletion(async () => {
+      try {
+        // Get element locator
+        const locator = await tab.refLocator({ ref, element: 'target element' });
+        
+        // Execute the JavaScript code on the element
+        const result = await locator.evaluate((element, code) => {
+          try {
+            // Create a function from the code string and execute it
+            const func = new Function('element', code);
+            return func(element);
+          } catch (error) {
+            return {
+              error: error instanceof Error ? error.message : String(error),
+              type: 'execution_error'
+            };
+          }
+        }, jsCode);
+        
+        // Determine pass/fail based on result
+        const isPass = result === 'pass' && !(result && typeof result === 'object' && 'error' in result);
+        const status = isPass ? 'pass' : 'fail';
+        const passed = isPass ? 1 : 0;
+        const failed = isPass ? 0 : 1;
+        
+        // Generate evidence message
+        const evidence = isPass 
+          ? `Successfully executed JavaScript code on element with ref "${ref}". Result: ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`
+          : `JavaScript code execution failed on element with ref "${ref}". Result: ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`;
+
+        const payload = {
+          ref,
+          element: 'target element',
+          summary: {
+            total: 1,
+            passed,
+            failed,
+            status,
+            evidence,
+          },
+          checks: [{
+            property: 'javascript_execution',
+            operator: 'execute',
+            expected: 'success',
+            actual: typeof result === 'object' ? JSON.stringify(result) : String(result),
+            result: isPass ? 'pass' : 'fail',
+          }],
+          result,
+          jsCode,
+        };
+        
+        console.log('Default validation executed:', payload);
+        response.addResult(JSON.stringify(payload, null, 2));
+        
+      } catch (error) {
+        const errorPayload = {
+          ref,
+          element: 'target element',
+          summary: {
+            total: 1,
+            passed: 0,
+            failed: 1,
+            status: 'fail',
+            evidence: `Failed to execute JavaScript code on element with ref "${ref}". Error: ${error instanceof Error ? error.message : String(error)}`,
+          },
+          checks: [{
+            property: 'javascript_execution',
+            operator: 'execute',
+            expected: 'success',
+            actual: error instanceof Error ? error.message : String(error),
+            result: 'fail',
+          }],
+          error: error instanceof Error ? error.message : String(error),
+          jsCode,
+        };
+        
+        console.error('Default validation error:', errorPayload);
+        response.addResult(JSON.stringify(errorPayload, null, 2));
+      }
+    });
+  },
+});
 
 export default [
   get_computed_styles,
@@ -1118,5 +1313,6 @@ export default [
   validate_element_text,
   validate_dom_properties,
   check_element_in_snapshot,
-  check_alert_in_snapshot
+  check_alert_in_snapshot,
+  default_validation
 ];
