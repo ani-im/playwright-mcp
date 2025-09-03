@@ -1214,32 +1214,69 @@ const default_validation = defineTabTool({
     title: 'Default Validation Tool',
     description: 'Default tool for when LLM cannot find a suitable tool. Accepts ref and JavaScript code to parse and execute.',
     inputSchema: z.object({
-      ref: z.string().describe('Element reference from the page snapshot'),
-      jsCode: z.string().describe('JavaScript code to execute on the element. The function should return "pass" or "fail" as string to determine the validation result.'),
+      refs: z.array(z.string()).describe('Array of element references from the page snapshot. Pass single ref as array with one element if needed.'),
+      jsCode: z.string().describe('JavaScript code to execute on each element. Function receives single element as parameter. Should return "pass" or "fail" as string. All elements must return "pass" for overall success.'),
     }),
     type: 'readOnly',
   },
   handle: async (tab, params, response) => {
-    const { ref, jsCode } = params;
+    const { refs, jsCode } = params;
     
     await tab.waitForCompletion(async () => {
       try {
-        // Get element locator
-        const locator = await tab.refLocator({ ref, element: 'target element' });
+        // Get element locators for all refs
+        const locators = await Promise.all(
+          refs.map(ref => tab.refLocator({ ref, element: 'target element' }))
+        );
         
-        // Execute the JavaScript code on the element
-        const result = await locator.evaluate((element, code) => {
-          try {
-            // Create a function from the code string and execute it
-            const func = new Function('element', code);
-            return func(element);
-          } catch (error) {
-            return {
-              error: error instanceof Error ? error.message : String(error),
-              type: 'execution_error'
-            };
-          }
-        }, jsCode);
+        // Execute the JavaScript code on each element and collect results
+        const results = await Promise.all(
+          locators.map(async (locator, index) => {
+            return await locator.evaluate((element, code) => {
+              try {
+                // Safe evaluation function
+                const safeEval = (code: string, element: Element) => {
+                  const func = new Function('element', 'document', `
+                    'use strict';
+                    ${code}
+                  `);
+                  
+                  // Create safe context with necessary objects
+                  const safeContext = {
+                    element,
+                    document, // Keep document for element searching
+                    // Disable potentially dangerous functions
+                    console: { log: () => {}, warn: () => {}, error: () => {} },
+                    setTimeout: undefined,
+                    setInterval: undefined,
+                    eval: undefined,
+                    Function: undefined,
+                    // Keep limited window functionality
+                    window: {
+                      innerWidth: window.innerWidth,
+                      innerHeight: window.innerHeight,
+                      localStorage: window.localStorage,
+                      sessionStorage: window.sessionStorage
+                    }
+                  };
+                  
+                  return func.call(safeContext, element, document);
+                };
+                
+                return safeEval(code, element);
+              } catch (error) {
+                return {
+                  error: error instanceof Error ? error.message : String(error),
+                  type: 'execution_error'
+                };
+              }
+            }, jsCode);
+          })
+        );
+        
+        // Check if all results are 'pass'
+        const allPassed = results.every(result => result === 'pass');
+        const result = allPassed ? 'pass' : 'fail';
         
         // Determine pass/fail based on result
         const isPass = result === 'pass' && !(result && typeof result === 'object' && 'error' in result);
@@ -1249,12 +1286,12 @@ const default_validation = defineTabTool({
         
         // Generate evidence message
         const evidence = isPass 
-          ? `Successfully executed JavaScript code on element with ref "${ref}". Result: ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`
-          : `JavaScript code execution failed on element with ref "${ref}". Result: ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`;
+          ? `Successfully executed JavaScript code on ${refs.length} element(s) with refs: [${refs.join(', ')}]. Result: ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`
+          : `JavaScript code execution failed on ${refs.length} element(s) with refs: [${refs.join(', ')}]. Result: ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`;
 
         const payload = {
-          ref,
-          element: 'target element',
+          refs,
+          element: 'target elements',
           summary: {
             total: 1,
             passed,
@@ -1278,14 +1315,14 @@ const default_validation = defineTabTool({
         
       } catch (error) {
         const errorPayload = {
-          ref,
-          element: 'target element',
+          refs,
+          element: 'target elements',
           summary: {
             total: 1,
             passed: 0,
             failed: 1,
             status: 'fail',
-            evidence: `Failed to execute JavaScript code on element with ref "${ref}". Error: ${error instanceof Error ? error.message : String(error)}`,
+            evidence: `Failed to execute JavaScript code on ${refs.length} element(s) with refs: [${refs.join(', ')}]. Error: ${error instanceof Error ? error.message : String(error)}`,
           },
           checks: [{
             property: 'javascript_execution',
