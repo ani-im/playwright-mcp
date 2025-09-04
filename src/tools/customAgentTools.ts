@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { defineTabTool, defineTool } from './tool.js';
 import type * as playwright from 'playwright';
+import {getAllComputedStylesDirect, pickActualValue, parseRGBColor, isColorInRange, getAllDomPropsDirect, hasAlertDialog, getAlertDialogText,performRegexCheck } from './helperFunctions.js';
+
 
 const elementStyleSchema = z.object({
   element: z.string().describe('Human-readable element description used to obtain permission to interact with the element'),
@@ -405,131 +407,7 @@ export const validateStylesSchema = z.object({
 });
 
 
-const camelToKebab = (prop: string) =>
-  prop.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 
-function pickActualValue(
-  all: Record<string, string>,
-  name: string
-): string | undefined {
-  if (name in all) return all[name];
-  const kebab = camelToKebab(name);
-  if (kebab in all) return all[kebab];
-  const trimmed = name.trim();
-  if (trimmed in all) return all[trimmed];
-  const trimmedKebab = camelToKebab(trimmed);
-  if (trimmedKebab in all) return all[trimmedKebab];
-  return undefined;
-}
-
-// Function to parse RGB color values from various CSS color formats
-function parseRGBColor(colorValue: string): { r: number; g: number; b: number } | null {
-  if (!colorValue) return null;
-  
-  // Handle rgb(r, g, b) format
-  const rgbMatch = colorValue.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-  if (rgbMatch) {
-    return {
-      r: parseInt(rgbMatch[1]),
-      g: parseInt(rgbMatch[2]),
-      b: parseInt(rgbMatch[3])
-    };
-  }
-  
-  // Handle rgba(r, g, b, a) format (ignore alpha)
-  const rgbaMatch = colorValue.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*[\d.]+\)/);
-  if (rgbaMatch) {
-    return {
-      r: parseInt(rgbaMatch[1]),
-      g: parseInt(rgbaMatch[2]),
-      b: parseInt(rgbaMatch[3])
-    };
-  }
-  
-  // Handle hex colors (#RRGGBB or #RGB)
-  const hexMatch = colorValue.match(/#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})/);
-  if (hexMatch) {
-    const hex = hexMatch[1];
-    if (hex.length === 3) {
-      // #RGB format
-      return {
-        r: parseInt(hex[0] + hex[0], 16),
-        g: parseInt(hex[1] + hex[1], 16),
-        b: parseInt(hex[2] + hex[2], 16)
-      };
-    } else {
-      // #RRGGBB format
-      return {
-        r: parseInt(hex.substring(0, 2), 16),
-        g: parseInt(hex.substring(2, 4), 16),
-        b: parseInt(hex.substring(4, 6), 16)
-      };
-    }
-  }
-  
-  // Handle named colors (basic support)
-  const namedColors: Record<string, { r: number; g: number; b: number }> = {
-    'red': { r: 255, g: 0, b: 0 },
-    'green': { r: 0, g: 128, b: 0 },
-    'blue': { r: 0, g: 0, b: 255 },
-    'black': { r: 0, g: 0, b: 0 },
-    'white': { r: 255, g: 255, b: 255 },
-    'gray': { r: 128, g: 128, b: 128 },
-    'grey': { r: 128, g: 128, b: 128 },
-    'yellow': { r: 255, g: 255, b: 0 },
-    'cyan': { r: 0, g: 255, b: 255 },
-    'magenta': { r: 255, g: 0, b: 255 },
-    'orange': { r: 255, g: 165, b: 0 },
-    'purple': { r: 128, g: 0, b: 128 },
-    'pink': { r: 255, g: 192, b: 203 },
-    'brown': { r: 165, g: 42, b: 42 },
-    'darkred': { r: 139, g: 0, b: 0 },
-    'lightblue': { r: 173, g: 216, b: 230 },
-    'darkblue': { r: 0, g: 0, b: 139 },
-    'lightgreen': { r: 144, g: 238, b: 144 },
-    'darkgreen': { r: 0, g: 100, b: 0 }
-  };
-  
-  const lowerColor = colorValue.toLowerCase().trim();
-  if (namedColors[lowerColor]) {
-    return namedColors[lowerColor];
-  }
-  
-  return null;
-}
-
-// Function to check if RGB color is within specified range
-function isColorInRange(actualColor: string, range: { minR: number; maxR: number; minG: number; maxG: number; minB: number; maxB: number }): boolean {
-  const rgb = parseRGBColor(actualColor);
-  if (!rgb) return false;
-  
-  return rgb.r >= range.minR && rgb.r <= range.maxR &&
-         rgb.g >= range.minG && rgb.g <= range.maxG &&
-         rgb.b >= range.minB && rgb.b <= range.maxB;
-}
-
-
-async function getAllComputedStylesDirect(
-  tab: any,
-  ref: string,
-  element: string
-): Promise<Record<string, string>> {
-  const locator = await tab.refLocator({ ref, element });
-
-  const allStyles: Record<string, string> = await locator.evaluate(
-    (el: Element) => {
-      const cs = window.getComputedStyle(el);
-      const out: Record<string, string> = {};
-      for (let i = 0; i < cs.length; i++) {
-        const name = cs[i]; // kebab-case
-        out[name] = cs.getPropertyValue(name);
-      }
-      return out;
-    }
-  );
-
-  return allStyles;
-}
 
 const validate_computed_styles = defineTabTool({
   capability: "core",
@@ -815,63 +693,7 @@ const validateDomPropsSchema = baseDomInputSchema.extend({
   checks: domChecksSchema,
 });
 
-async function getAllDomPropsDirect(tab: any, ref: string, element: string) {
-  const locator = await tab.refLocator({ ref, element });
 
-  const props = await locator.evaluate(
-    (el: Element) => {
-      if (!el) return {};
-
-      const out: Record<string, any> = {};
-
-      // Collect all "own" properties of the element
-      for (const key of Object.keys(el)) {
-        try {
-          const val = (el as any)[key];
-          // filter only primitives for readability
-          if (["string", "number", "boolean"].includes(typeof val) || val === null) {
-            out[key] = val;
-          }
-        } catch (_) {
-          // skip getters with errors
-        }
-      }
-
-      // + useful attributes
-      if (el.getAttributeNames) {
-        el.getAttributeNames().forEach((attr: string) => {
-          out[`attr:${attr}`] = el.getAttribute(attr);
-        });
-      }
-
-      // Handle special cases for common attributes
-      // For disabled attribute, check both the property and the attribute
-      if (el.hasAttribute('disabled')) {
-        out['disabled'] = true;
-      } else if ((el as any).disabled !== undefined) {
-        out['disabled'] = (el as any).disabled;
-      }
-
-      // For checked attribute, check both the property and the attribute
-      if (el.hasAttribute('checked')) {
-        out['checked'] = true;
-      } else if ((el as any).checked !== undefined) {
-        out['checked'] = (el as any).checked;
-      }
-
-      // For value attribute, prioritize the property over attribute
-      if ((el as any).value !== undefined) {
-        out['value'] = (el as any).value;
-      } else if (el.hasAttribute('value')) {
-        out['value'] = el.getAttribute('value');
-      }
-
-      return out;
-    }
-  );
-
-  return props ?? {};
-}
 
 const validate_dom_properties = defineTabTool({
   capability: "core",
@@ -1041,34 +863,7 @@ const check_element_in_snapshot = defineTabTool({
   },
 });
 
-// Function to check if alert dialog is present in snapshot
-function hasAlertDialog(snapshotContent: string): boolean {
-  // Check for dialog information in the snapshot
-  const hasModalState = snapshotContent.includes('### Modal state');
-  const hasDialogMessage = snapshotContent.includes('dialog with message');
-  const hasNoModalState = snapshotContent.includes('There is no modal state present');
-  
-  console.log('hasModalState:', hasModalState);
-  console.log('hasDialogMessage:', hasDialogMessage);
-  console.log('hasNoModalState:', hasNoModalState);
-  
-  return hasModalState && hasDialogMessage && !hasNoModalState;
-}
 
-// Function to extract alert dialog text from snapshot
-function getAlertDialogText(snapshotContent: string): string | null {
-  if (!hasAlertDialog(snapshotContent)) {
-    return null;
-  }
-  
-  // Look for dialog message pattern: "dialog with message "text""
-  const dialogMatch = snapshotContent.match(/dialog with message "([^"]+)"/);
-  if (dialogMatch) {
-    return dialogMatch[1];
-  }
-  
-  return null;
-}
 
 const checkAlertInSnapshotSchema = z.object({
   element: z.string().describe('Human-readable element description for logging purposes'),
@@ -1221,14 +1016,14 @@ const default_validation = defineTabTool({
   },
   handle: async (tab, params, response) => {
     const { refs, jsCode } = params;
-    
+
     await tab.waitForCompletion(async () => {
       try {
         // Get element locators for all refs
         const locators = await Promise.all(
           refs.map(ref => tab.refLocator({ ref, element: 'target element' }))
         );
-        
+
         // Execute the JavaScript code on each element and collect results
         const results = await Promise.all(
           locators.map(async (locator, index) => {
@@ -1240,7 +1035,7 @@ const default_validation = defineTabTool({
                     'use strict';
                     ${code}
                   `);
-                  
+
                   // Create safe context with necessary objects
                   const safeContext = {
                     element,
@@ -1259,10 +1054,10 @@ const default_validation = defineTabTool({
                       sessionStorage: window.sessionStorage
                     }
                   };
-                  
+
                   return func.call(safeContext, element, document);
                 };
-                
+
                 return safeEval(code, element);
               } catch (error) {
                 return {
@@ -1273,17 +1068,17 @@ const default_validation = defineTabTool({
             }, jsCode);
           })
         );
-        
+
         // Check if all results are 'pass'
         const allPassed = results.every(result => result === 'pass');
         const result = allPassed ? 'pass' : 'fail';
-        
+
         // Determine pass/fail based on result
         const isPass = result === 'pass' && !(result && typeof result === 'object' && 'error' in result);
         const status = isPass ? 'pass' : 'fail';
         const passed = isPass ? 1 : 0;
         const failed = isPass ? 0 : 1;
-        
+
         // Generate evidence message
         const evidence = isPass 
           ? `Successfully executed JavaScript code on ${refs.length} element(s) with refs: [${refs.join(', ')}]. Result: ${typeof result === 'object' ? JSON.stringify(result) : String(result)}`
@@ -1309,10 +1104,10 @@ const default_validation = defineTabTool({
           result,
           jsCode,
         };
-        
+
         console.log('Default validation executed:', payload);
         response.addResult(JSON.stringify(payload, null, 2));
-        
+
       } catch (error) {
         const errorPayload = {
           refs,
@@ -1334,11 +1129,228 @@ const default_validation = defineTabTool({
           error: error instanceof Error ? error.message : String(error),
           jsCode,
         };
-        
+
         console.error('Default validation error:', errorPayload);
         response.addResult(JSON.stringify(errorPayload, null, 2));
       }
     });
+  },
+});
+
+
+
+
+
+const validate_response = defineTabTool({
+  capability: 'core',
+  schema: {
+    name: 'validate_response',
+    title: 'Validate Response using Regex Patterns',
+    description: 'Validate response data using regex patterns. Types: regex_extract (extract value with pattern), regex_match (check pattern presence).',
+    inputSchema: z.object({
+      responseData: z.string().describe('Response data as string (can be JSON with stdout/stderr or raw response)'),
+      checks: z.array(z.object({
+        type: z.enum(['regex_extract', 'regex_match']).describe('Type of validation check'),
+        name: z.string().describe('Name/description of the check for logging purposes'),
+        pattern: z.string().describe('Regex pattern to extract or match against'),
+        expected: z.any().optional().describe('Expected value for comparison (not needed for regex_match)'),
+        operator: z.enum(['equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than']).optional().default('equals').describe('Comparison operator (not needed for regex_match)'),
+        extractGroup: z.number().optional().default(1).describe('Regex capture group to extract (default: 1, only for regex_extract)'),
+      })).min(1).describe('Array of validation checks to perform'),
+    }),
+    type: 'readOnly',
+  },
+  handle: async (tab, params, response) => {
+    const { responseData, checks } = params;
+
+    try {
+      // Perform all checks
+      const results = checks.map(check => {
+        const result = performRegexCheck(responseData, check);
+        return {
+          type: check.type,
+          name: check.name,
+          pattern: check.pattern,
+          expected: check.expected,
+          operator: check.operator,
+          extractGroup: check.extractGroup,
+          actual: result.actual,
+          result: result.passed ? 'pass' : 'fail',
+        };
+      });
+
+      const passedCount = results.filter(r => r.result === 'pass').length;
+      const status = passedCount === results.length ? 'pass' : 'fail';
+
+      // Generate evidence message
+      let evidence = "";
+      if (status === 'pass') {
+        evidence = `All ${results.length} regex validation checks passed successfully`;
+      } else {
+        const failedChecks = results.filter(r => r.result === 'fail');
+        const failedDetails = failedChecks.map(c => 
+          `${c.name} (pattern: ${c.pattern}, expected: ${c.expected}, got: ${c.actual})`
+        ).join(', ');
+        evidence = `${passedCount}/${results.length} checks passed. Failed: ${failedDetails}`;
+      }
+
+      const payload = {
+        responseData: responseData.length > 500 ? responseData.slice(0, 500) + '...' : responseData,
+        summary: {
+          total: results.length,
+          passed: passedCount,
+          failed: results.length - passedCount,
+          status,
+          evidence,
+        },
+        checks: results,
+      };
+
+      console.log('Validate cURL response regex:', payload);
+      response.addResult(JSON.stringify(payload, null, 2));
+
+    } catch (error) {
+      const errorPayload = {
+        responseData: responseData.length > 500 ? responseData.slice(0, 500) + '...' : responseData,
+        summary: {
+          total: checks.length,
+          passed: 0,
+          failed: checks.length,
+          status: 'fail',
+          evidence: `Failed to validate cURL response with regex. Error: ${error instanceof Error ? error.message : String(error)}`,
+        },
+        checks: checks.map(check => ({
+          type: check.type,
+          name: check.name,
+          pattern: check.pattern,
+          expected: check.expected,
+          operator: check.operator,
+          extractGroup: check.extractGroup,
+          actual: 'error',
+          result: 'fail',
+        })),
+        error: error instanceof Error ? error.message : String(error),
+      };
+
+      console.error('Validate cURL response regex error:', errorPayload);
+      response.addResult(JSON.stringify(errorPayload, null, 2));
+    }
+  },
+});
+
+
+
+const validate_tab_exist = defineTabTool({
+  capability: 'core',
+  schema: {
+    name: 'validate_tab_exist',
+    title: 'Validate Tab Exists',
+    description: 'Check if a browser tab with the specified URL exists by calling browser_tab_list and searching through the results.',
+    inputSchema: z.object({
+      url: z.string().describe('URL to check for in existing browser tabs'),
+      exactMatch: z.boolean().optional().default(false).describe('Whether to require exact URL match (true) or partial match (false)'),
+    }),
+    type: 'readOnly',
+  },
+  handle: async (tab, params, response) => {
+    const { url, exactMatch = false } = params;
+
+    try {
+      // Get all tabs information from context
+      const context = tab.context;
+      const allTabs = context.tabs();
+
+                           // Extract tab info using the correct page methods
+       const tabsWithInfo = await Promise.all(allTabs.map(async (tabItem: any, index: number) => {
+         try {
+           // Get URL and title from page object
+           const tabUrl = await tabItem.page.url() || 'unknown';
+           const tabTitle = await tabItem.page.title() || 'Unknown';
+
+           return {
+             index,
+             header: tabTitle,
+             url: tabUrl
+           };
+         } catch (error) {
+           // Fallback if we can't get tab info
+           return {
+             index,
+             header: 'Unknown',
+             url: 'unknown'
+           };
+         }
+       }));
+
+      console.log('All tabs info:', tabsWithInfo);
+
+      let foundTab = null;
+      let matchType = '';
+
+      // Search for tab with matching URL
+      if (exactMatch) {
+        // Exact URL match
+        foundTab = tabsWithInfo.find((tab: any) => tab.url === url);
+        matchType = 'exact';
+      } else {
+        // Partial URL match
+        foundTab = tabsWithInfo.find((tab: any) => tab.url.includes(url) || url.includes(tab.url));
+        matchType = 'partial';
+      }
+
+      const isFound = !!foundTab;
+      const status = isFound ? 'pass' : 'fail';
+
+      // Generate evidence message
+      let evidence = "";
+      if (isFound && foundTab) {
+        evidence = `Found tab with ${matchType} URL match: "${(foundTab as any).url}" (index: ${(foundTab as any).index}, header: "${(foundTab as any).header}")`;
+      } else {
+        const availableUrls = tabsWithInfo.map((t: any) => (t as any).url).join(', ');
+        evidence = `Tab with URL "${url}" not found. Available tabs: ${availableUrls}`;
+      }
+
+      const payload = {
+        url,
+        exactMatch,
+        matchType,
+        foundTab: foundTab ? {
+          index: (foundTab as any).index,
+          header: (foundTab as any).header,
+          url: (foundTab as any).url
+        } : null,
+        summary: {
+          total: 1,
+          passed: isFound ? 1 : 0,
+          failed: isFound ? 0 : 1,
+          status,
+          evidence,
+        },
+        allTabs: tabsWithInfo.map((t: any) => ({
+          index: (t as any).index,
+          header: (t as any).header,
+          url: (t as any).url
+        })),
+      };
+      console.log('Validate tab exist:', payload);
+      response.addResult(JSON.stringify(payload, null, 2));
+
+    } catch (error) {
+      const errorPayload = {
+        url,
+        exactMatch,
+        summary: {
+          total: 1,
+          passed: 0,
+          failed: 1,
+          status: 'fail',
+          evidence: `Failed to validate tab existence. Error: ${error instanceof Error ? error.message : String(error)}`,
+        },
+        error: error instanceof Error ? error.message : String(error),
+      };
+      console.error('Validate tab exist error:', errorPayload);
+      response.addResult(JSON.stringify(errorPayload, null, 2));
+    }
   },
 });
 
@@ -1351,5 +1363,7 @@ export default [
   validate_dom_properties,
   check_element_in_snapshot,
   check_alert_in_snapshot,
-  default_validation
+  default_validation,
+  validate_response,
+  validate_tab_exist
 ];
