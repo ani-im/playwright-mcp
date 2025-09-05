@@ -519,7 +519,7 @@ const textValidationSchema = z.object({
     "Human-readable element description used to obtain permission to interact with the element"
   ),
   ref: z.string().optional().describe(
-    "Exact target element reference from the page snapshot. If not provided, validation will search across the whole page snapshot"
+    "Exact target element reference from the page snapshot. If you don't have a specific element reference, omit this parameter entirely (don't pass 'null' or empty string) to search across the whole page snapshot"
   ),
   expectedText: z.string().describe(
     "Expected text value to validate in the element or whole page"
@@ -972,8 +972,6 @@ const check_alert_in_snapshot = defineTabTool({
       const resultString = JSON.stringify(payload, null, 2);
       console.log("Result string:", resultString);
       response.addResult(resultString);
-      console.log("Result added to response");
-      console.log("Function completed successfully");
     } catch (error) {
       const errorMessage = `Failed to check alert dialog in snapshot. Error: ${error instanceof Error ? error.message : String(error)}`;
       const errorPayload = {
@@ -1245,15 +1243,17 @@ const validate_tab_exist = defineTabTool({
   schema: {
     name: 'validate_tab_exist',
     title: 'Validate Tab Exists',
-    description: 'Check if a browser tab with the specified URL exists by calling browser_tab_list and searching through the results.',
+    description: 'Check if a browser tab with the specified URL exists or does not exist. Use matchType "exist" to verify tab exists, or "not-exist" to verify tab does not exist. exactMatch is ignored when matchType is "not-exist". Optionally validate if the found tab is the current active tab with isCurrent parameter.',
     inputSchema: z.object({
       url: z.string().describe('URL to check for in existing browser tabs'),
-      exactMatch: z.boolean().optional().default(false).describe('Whether to require exact URL match (true) or partial match (false)'),
+      matchType: z.enum(['exist', 'not-exist']).describe('Whether to check if tab exists or does not exist'),
+      exactMatch: z.boolean().optional().describe('Whether to require exact URL match (true) or partial match (false). Ignored when matchType is "not-exist"'),
+      isCurrent: z.boolean().optional().describe('If true, also validates that the found tab is the current active tab'),
     }),
     type: 'readOnly',
   },
   handle: async (tab, params, response) => {
-    const { url, exactMatch = false } = params;
+    const { url, matchType, exactMatch = false, isCurrent } = params;
 
     try {
       // Get all tabs information from context
@@ -1284,36 +1284,81 @@ const validate_tab_exist = defineTabTool({
 
       console.log('All tabs info:', tabsWithInfo);
 
+      // Find current tab URL
+      let currentTabUrl = '';
+      try {
+        currentTabUrl = await tab.page.url();
+      } catch (error) {
+        console.log('Could not determine current tab URL:', error);
+      }
+
       let foundTab = null;
-      let matchType = '';
+      let searchType = '';
 
       // Search for tab with matching URL
       if (exactMatch) {
         // Exact URL match
         foundTab = tabsWithInfo.find((tab: any) => tab.url === url);
-        matchType = 'exact';
+        searchType = 'exact';
       } else {
         // Partial URL match
         foundTab = tabsWithInfo.find((tab: any) => tab.url.includes(url) || url.includes(tab.url));
-        matchType = 'partial';
+        searchType = 'partial';
       }
 
       const isFound = !!foundTab;
-      const status = isFound ? 'pass' : 'fail';
+      
+      // Check if found tab is current tab (if isCurrent is specified)
+      let isCurrentTab = false;
+      if (isFound && isCurrent !== undefined) {
+        isCurrentTab = (foundTab as any).url === currentTabUrl;
+      }
+      
+      // Determine final result based on matchType and isCurrent
+      let status: string;
+      if (matchType === 'exist') {
+        const urlMatch = isFound;
+        const currentMatch = isCurrent === undefined ? true : (isCurrent ? isCurrentTab : !isCurrentTab);
+        status = (urlMatch && currentMatch) ? 'pass' : 'fail';
+      } else { // matchType === 'not-exist'
+        const urlMatch = !isFound;
+        const currentMatch = isCurrent === undefined ? true : (isCurrent ? isCurrentTab : !isCurrentTab);
+        status = (urlMatch && currentMatch) ? 'pass' : 'fail';
+      }
 
       // Generate evidence message
       let evidence = "";
-      if (isFound && foundTab) {
-        evidence = `Found tab with ${matchType} URL match: "${(foundTab as any).url}" (index: ${(foundTab as any).index}, header: "${(foundTab as any).header}")`;
-      } else {
-        const availableUrls = tabsWithInfo.map((t: any) => (t as any).url).join(', ');
-        evidence = `Tab with URL "${url}" not found. Available tabs: ${availableUrls}`;
+      let currentInfo = "";
+      if (isCurrent !== undefined) {
+        if (isFound) {
+          currentInfo = ` Found tab is ${isCurrentTab ? '' : 'not '}current tab. Expected: ${isCurrent ? 'current' : 'not current'}.`;
+        } else {
+          currentInfo = ` Current tab check: ${isCurrent ? 'expected current tab not found' : 'expected non-current tab not found'}.`;
+        }
+      }
+      
+      if (matchType === 'exist') {
+        if (isFound && foundTab) {
+          evidence = `Found tab with ${searchType} URL match: "${(foundTab as any).url}" (index: ${(foundTab as any).index}, header: "${(foundTab as any).header}")${currentInfo}`;
+        } else {
+          const availableUrls = tabsWithInfo.map((t: any) => (t as any).url).join(', ');
+          evidence = `Tab with URL "${url}" not found. Available tabs: ${availableUrls}${currentInfo}`;
+        }
+      } else { // matchType === 'not-exist'
+        if (!isFound) {
+          evidence = `Tab with URL "${url}" does not exist (as expected). Available tabs: ${tabsWithInfo.map((t: any) => (t as any).url).join(', ')}${currentInfo}`;
+        } else {
+          evidence = `Tab with URL "${url}" exists (unexpected). Found: "${(foundTab as any).url}" (index: ${(foundTab as any).index}, header: "${(foundTab as any).header}")${currentInfo}`;
+        }
       }
 
       const payload = {
         url,
-        exactMatch,
         matchType,
+        exactMatch,
+        isCurrent,
+        currentTabUrl,
+        isCurrentTab,
         foundTab: foundTab ? {
           index: (foundTab as any).index,
           header: (foundTab as any).header,
@@ -1321,8 +1366,8 @@ const validate_tab_exist = defineTabTool({
         } : null,
         summary: {
           total: 1,
-          passed: isFound ? 1 : 0,
-          failed: isFound ? 0 : 1,
+          passed: status === 'pass' ? 1 : 0,
+          failed: status === 'pass' ? 0 : 1,
           status,
           evidence,
         },
