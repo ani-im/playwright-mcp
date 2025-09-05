@@ -1,6 +1,6 @@
 {
   "name": "@zealous-tech/playwright-mcp",
-  "version": "0.0.32-fork.0",
+  "version": "0.0.32-fork.1",
   "description": "Playwright Tools for MCP",
   "type": "module",
   "repository": {
