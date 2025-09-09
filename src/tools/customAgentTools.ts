@@ -552,42 +552,52 @@ const validate_element_text = defineTabTool({
       if (ref) {
         
         const locator = await tab.refLocator({ ref, element });
-        actualText = await locator.evaluate(
-          (el: Element) => (el.textContent ?? "").trim()
-        );
+        actualText = (await locator.textContent() ?? "").trim();
         
         // Fallback for input elements when textContent is empty and matchType is "contains"
         if (!actualText) {
           console.log(`Text content is empty for element ${element}, trying fallback properties...`);
-          actualText = await locator.evaluate((el: Element) => {
-            // Check various input properties as fallback
-            
-            if (el.tagName.toLowerCase() === 'input') {
-              const input = el as HTMLInputElement;
-              const fallbackText = input.value || input.placeholder || input.defaultValue || input.getAttribute('aria-label') || '';
-              return fallbackText;
-            }
-            // Check for other form elements
-            if (el.tagName.toLowerCase() === 'textarea') {
-              const textarea = el as HTMLTextAreaElement;
-              const fallbackText = textarea.value || textarea.placeholder || textarea.defaultValue || '';
-              return fallbackText;
-            }
-            if (el.tagName.toLowerCase() === 'select') {
-              const select = el as HTMLSelectElement;
-              const selectedOption = select.options[select.selectedIndex];
-              const fallbackText = selectedOption ? selectedOption.text || selectedOption.value : '';
-              return fallbackText;
-            }
-            // Check for contenteditable elements
-            if (el.getAttribute('contenteditable') === 'true') {
-              const fallbackText = el.innerHTML || '';
-              return fallbackText;
-            }
-            return '';
-          });
-          console.log(`Fallback result for ${element}: "${actualText}"`);
           
+          // Try input value first (works for input, textarea, select)
+          try {
+            actualText = await locator.inputValue();
+          } catch (error) {
+            // Not an input-like element, try other attributes
+          }
+          
+          if (!actualText) {
+            // Try placeholder
+            const placeholder = await locator.getAttribute('placeholder');
+            if (placeholder) {
+              actualText = placeholder;
+            }
+          }
+          
+          if (!actualText) {
+            // Try defaultValue
+            const defaultValue = await locator.getAttribute('defaultValue');
+            if (defaultValue) {
+              actualText = defaultValue;
+            }
+          }
+          
+          if (!actualText) {
+            // Try aria-label
+            const ariaLabel = await locator.getAttribute('aria-label');
+            if (ariaLabel) {
+              actualText = ariaLabel;
+            }
+          }
+          
+          if (!actualText) {
+            // Check for contenteditable
+            const isContentEditable = await locator.getAttribute('contenteditable');
+            if (isContentEditable === 'true') {
+              actualText = await locator.innerHTML();
+            }
+          }
+          
+          console.log(`Fallback result for ${element}: "${actualText}"`);
         }
       } else {
         const snapshotMd: string = await tab.captureSnapshot();
@@ -892,8 +902,8 @@ const check_alert_in_snapshot = defineTabTool({
       // Get the current snapshot
       console.log("start capture snapshot");
       const snapshotMd: string = await tab.captureSnapshot();
-      console.log('snapshotMd length:', snapshotMd.length);
-      console.log('snapshotMd preview:', snapshotMd.substring(0, 200));
+      // console.log('snapshotMd length:', snapshotMd.length);
+      // console.log('snapshotMd preview:', snapshotMd.substring(0, 200));
       
       // Check if alert dialog exists in the snapshot
       const alertExists = hasAlertDialog(snapshotMd);
@@ -1399,6 +1409,9 @@ const validate_tab_exist = defineTabTool({
   },
 });
 
+
+
+
 export default [
   get_computed_styles,
   extract_svg_from_element,
@@ -1410,5 +1423,6 @@ export default [
   check_alert_in_snapshot,
   default_validation,
   validate_response,
-  validate_tab_exist
+  validate_tab_exist,
+  
 ];
