@@ -783,12 +783,12 @@ const checkElementInSnapshotSchema = z.object({
   })).min(1).describe('Array of elements to check for existence in the snapshot. Each element can have its own match type.'),
 });
 
-const check_element_in_snapshot = defineTabTool({
+const validate_element_in_snapshot = defineTabTool({
   capability: 'core',
   schema: {
-    name: 'check_element_in_snapshot',
-    title: 'Check Element(s) in Snapshot',
-    description: 'Check if one or multiple elements with specified refs exist in the current page snapshot. Pass elements as an array - single element or multiple elements.',
+    name: 'validate_element_in_snapshot',
+    title: 'Validate Element(s) in Snapshot',
+    description: 'Validate if one or multiple elements with specified refs exist in the current page snapshot. Pass elements as an array - single element or multiple elements.',
     inputSchema: checkElementInSnapshotSchema,
     type: 'readOnly',
   },
@@ -885,12 +885,12 @@ const checkAlertInSnapshotSchema = z.object({
   ),
 });
 
-const check_alert_in_snapshot = defineTabTool({
+const validate_alert_in_snapshot = defineTabTool({
   capability: 'core',
   schema: {
-    name: 'check_alert_in_snapshot',
-    title: 'Check Alert in Snapshot',
-    description: 'Check if an alert dialog is present in the current page snapshot',
+    name: 'validate_alert_in_snapshot',
+    title: 'Validate Alert in Snapshot',
+    description: 'Validate if an alert dialog is present in the current page snapshot',
     inputSchema: checkAlertInSnapshotSchema,
     type: 'readOnly',
   },
@@ -1419,8 +1419,8 @@ export default [
   validate_computed_styles,
   validate_element_text,
   validate_dom_properties,
-  check_element_in_snapshot,
-  check_alert_in_snapshot,
+  validate_element_in_snapshot,
+  validate_alert_in_snapshot,
   default_validation,
   validate_response,
   validate_tab_exist,
